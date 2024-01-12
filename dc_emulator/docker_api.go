@@ -2,6 +2,7 @@ package dc_emulator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -23,37 +24,53 @@ type dockerRunArgs struct {
 	command  []string
 }
 
-func DockerApi(container_name string, args dockerRunArgs) {
+func returnErroHelper(errorList ...error) error {
+	if err := errors.Join(errorList...); err != nil {
+		return err
+	}
+	return nil
+}
 
-	err := createContainer(container_name, args)
+func DockerApi(args dockerRunArgs) {
+
+	ctx := context.Background()
+	cli, clientErr := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+
+	// Need to look for image and not rebuild if exists
+	imagetag := fmt.Sprintf("%s:latest", args.image)
+	imageExists, checkImageErr := imageExists(ctx, cli, imagetag)
+
+	var buildErr error
+	if !imageExists {
+		_, buildErr = buildDockerImage(ctx, args)
+
+	}
+	containerId, createContainerErr := createContainer(cli, ctx, args)
+
+	runDockerErr := runDockerContainer(cli, ctx, containerId)
+
+	err := returnErroHelper(
+		buildErr,
+		clientErr,
+		checkImageErr,
+		createContainerErr,
+		runDockerErr,
+	)
 	if err != nil {
-		fmt.Printf("Error: %v\n", err)
+		fmt.Println(err)
 	}
 }
 
-func createContainer(container_name string, args dockerRunArgs) error {
-
-	ctx := context.Background()
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		return err
-	}
-
-	_, err = buildDockerImage(context.Background(), args.build, container_name)
-	if err != nil {
-		return err
-	}
+func createContainer(cli *client.Client, ctx context.Context, args dockerRunArgs) (string, error) {
 
 	// Gets variables from env file, should make into a method to
 	envFile := args.env_file[0]
-	envFileContent, err := os.ReadFile(envFile)
-	if err != nil {
-		return err
-	}
+	envFileContent, envFileReadErr := os.ReadFile(envFile)
+
 	envVariables := strings.Split(string(envFileContent), "\n")
 
 	containerConfig := &container.Config{
-		Image: container_name,
+		Image: args.image,
 		Env:   envVariables,
 		Cmd:   args.command,
 	}
@@ -62,53 +79,65 @@ func createContainer(container_name string, args dockerRunArgs) error {
 		Binds: args.volumes,
 	}
 
-	resp, err := cli.ContainerCreate(
+	resp, createContainerErr := cli.ContainerCreate(
 		ctx,
 		containerConfig,
 		hostConfig,
 		nil,
 		nil,
-		container_name,
+		args.image,
 	)
+
+	err := returnErroHelper(
+		envFileReadErr,
+		createContainerErr,
+	)
+
 	if err != nil {
+		return "", err
+	}
+
+	return resp.ID, nil
+}
+
+func runDockerContainer(cli *client.Client, ctx context.Context, containerId string) error {
+
+	err := cli.ContainerStart(ctx, containerId, types.ContainerStartOptions{})
+	if err != nil {
+		cli.ContainerRemove(ctx, containerId, types.ContainerRemoveOptions{})
 		return err
 	}
 
-	err = cli.ContainerStart(ctx, resp.ID, types.ContainerStartOptions{})
-	if err != nil {
-		cli.ContainerRemove(ctx, resp.ID, types.ContainerRemoveOptions{})
-		return err
-	}
-
-	statusCh, errCh := cli.ContainerWait(ctx, resp.ID, container.WaitConditionNotRunning)
+	statusCh, errCh := cli.ContainerWait(ctx, containerId, container.WaitConditionNotRunning)
 	select {
 	case err := <-errCh:
 		if err != nil {
-			cli.ContainerRemove(ctx, resp.ID, types.ContainerRemoveOptions{})
+			cli.ContainerRemove(ctx, containerId, types.ContainerRemoveOptions{})
 			panic(err)
 		}
 	case <-statusCh:
 	}
 
-	out, err := cli.ContainerLogs(ctx, resp.ID, types.ContainerLogsOptions{ShowStdout: true})
+	out, err := cli.ContainerLogs(ctx, containerId, types.ContainerLogsOptions{ShowStdout: true})
 	if err != nil {
-		cli.ContainerRemove(ctx, resp.ID, types.ContainerRemoveOptions{})
+		cli.ContainerRemove(ctx, containerId, types.ContainerRemoveOptions{})
 		panic(err)
 	}
 
 	stdcopy.StdCopy(os.Stdout, os.Stderr, out)
 
-	cli.ContainerRemove(ctx, resp.ID, types.ContainerRemoveOptions{})
+	cli.ContainerRemove(ctx, containerId, types.ContainerRemoveOptions{})
+
 	return nil
 }
 
-func buildDockerImage(ctx context.Context, dockerfilePath, imageName string) (string, error) {
+func buildDockerImage(ctx context.Context, args dockerRunArgs) (string, error) {
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		return "", err
 	}
 
-	buildContext, err := archive.TarWithOptions(dockerfilePath, &archive.TarOptions{})
+	buildContext, err := archive.TarWithOptions(args.build, &archive.TarOptions{})
 	if err != nil {
 		return "", err
 	}
@@ -118,7 +147,7 @@ func buildDockerImage(ctx context.Context, dockerfilePath, imageName string) (st
 		buildContext,
 		types.ImageBuildOptions{
 			Dockerfile: "Dockerfile", // Path to the Dockerfile in the build context
-			Tags:       []string{imageName},
+			Tags:       []string{args.image},
 		},
 	)
 	if err != nil {
@@ -132,15 +161,32 @@ func buildDockerImage(ctx context.Context, dockerfilePath, imageName string) (st
 		return "", err
 	}
 
-	args := filters.NewArgs()
-	args.Add("reference", imageName)
+	args_ref := filters.NewArgs()
+	args_ref.Add("reference", args.image)
 
 	listOptions := types.ImageListOptions{
-		Filters: args,
+		Filters: args_ref,
 	}
 
 	dc, _ := cli.ImageList(ctx, listOptions)
 
-	imageID := strings.TrimPrefix(dc[0].ID, "åsha256:")
+	imageID := strings.TrimPrefix(dc[0].ID, "sha256:")
 	return imageID, nil
+}
+
+func imageExists(ctx context.Context, cli *client.Client, imageName string) (bool, error) {
+	imageList, err := cli.ImageList(ctx, types.ImageListOptions{})
+	if err != nil {
+		return false, err
+	}
+
+	for _, image := range imageList {
+		for _, tag := range image.RepoTags {
+			if tag == imageName {
+				return true, nil
+			}
+		}
+	}
+
+	return false, nil
 }

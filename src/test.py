@@ -1,5 +1,7 @@
+from datetime import datetime
+
 f = open("demofile2.txt", "a")
-f.write("Now the file has more content!")
+f.writelines([datetime.now().strftime("%m/%d/%Y, %H:%M:%S")])
 f.close()
 
-print("file written")
+print("file super written")

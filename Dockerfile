@@ -4,6 +4,7 @@ WORKDIR /work
 
 COPY src .
 
+RUN python3 -m pip install datetime
 # RUN python3 -m pip install --no-cache-dir pip==23.1.2 \
 #     && pip install --no-cache-dir awscli==1.27.142 \
 #     && pip install --no-cache-dir botocore==1.29.142 \

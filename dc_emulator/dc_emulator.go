@@ -1,16 +1,22 @@
 package dc_emulator
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+)
 
-var defaultImage string = "public.ecr.aws/dnxsolutions/ecs-deploy:latest"
-var defaultVolume string = "/Users/luizsutil/Development/go-buider/go-src/src:/work"
+func PWD(volPath string) string {
+	var path, _ = os.Getwd()
+	currPath := fmt.Sprintf("%s/%s", path, volPath)
+	return currPath
+}
 
 var ecs_deploy = map[string]dockerRunArgs{
 	"deploy": {
 		build:    ".",
-		image:    defaultImage,
+		image:    "docker-test-python",
 		env_file: []string{".env"},
-		volumes:  []string{defaultVolume},
+		volumes:  []string{PWD("src:/work")},
 		command:  []string{"/work/test.py"},
 	},
 }
@@ -18,7 +24,6 @@ var ecs_deploy = map[string]dockerRunArgs{
 func EcsDeploy(cmd string) {
 
 	cmdArgs := ecs_deploy[cmd]
-	containerName := fmt.Sprintf("%s-ecs", cmd)
-	DockerApi(containerName, cmdArgs)
+	DockerApi(cmdArgs)
 
 }
