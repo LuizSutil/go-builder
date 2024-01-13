@@ -1,3 +1,5 @@
+// A comment on the package will be output when you list the targets of a
+// magefile.
 package dc_emulator
 
 import (
@@ -21,6 +23,8 @@ var ecs_deploy = map[string]dockerRunArgs{
 	},
 }
 
+// A comment on the package will be output when you list the targets of a
+// magefile.
 func EcsDeploy(cmd string) {
 
 	cmdArgs := ecs_deploy[cmd]
